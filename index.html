@@ -1,0 +1,503 @@
+<div>Teachable Machine Pose Model</div>
+<div class="options">
+  <div class="model-input">
+    <label>Image Model URL: </label>
+    <input
+      type="text"
+      id="imageUrlInput"
+      value="https://teachablemachine.withgoogle.com/models/0lEKy97vU/"
+    />
+    <label>Pose Model URL: </label>
+    <input
+      type="text"
+      id="poseUrlInput"
+      value="https://teachablemachine.withgoogle.com/models/iWziCF_1p/"
+    />
+  </div>
+  <div class="selections">
+    <div class="camera-selection">
+      <label for="recordingAvailability">Record video? </label>
+      <select id="recordingAvailability" name="recordingAvailability">
+        <option value="">YES</option>
+        <option value="">NO</option>
+      </select>
+    </div>
+    <div class="camera-selection">
+      <label for="cameraSelect">Select Camera: </label>
+      <select id="cameraSelect" name="cameraSelect">
+        <option value="">-- Select Camera --</option>
+      </select>
+    </div>
+  </div>
+</div>
+<div><canvas id="canvas"></canvas></div>
+<video id="videoPlayer" style="width: 1024px; height: 768px">
+  <source id="videoSource" src="" type="video/webm" />
+</video>
+<div id="label-container"></div>
+<div id="image-label-container"></div>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
+<script type="text/javascript">
+  // More API functions here:
+  // https://github.com/googlecreativelab/teachablemachine-community/tree/master/libraries/pose
+
+  // the link to your model provided by Teachable Machine export panel
+  // const URL = "https://teachablemachine.withgoogle.com/models/iWziCF_1p/";
+  const URL_POSE = document.getElementById("poseUrlInput");
+  let model,
+    imageModel,
+    webcam,
+    ctx,
+    labelContainer,
+    imageLabelContainer,
+    maxPredictions,
+    maxImagePredictions;
+  let mediaRecorder;
+  let cameraIds = [];
+  let prevPose = null;
+  let myAud = null;
+  let videoLoaded = false;
+  let recording = false;
+  let startCnt = 0;
+  let stopCnt = 0;
+  let noActionCnt = 0;
+  let actionCnt = 0;
+  let recordingClass = "";
+  let isRecordingAvailable = true;
+  let isPlayingRecordings = false;
+
+  const playAud = async (src) => {
+    myAud = null;
+    myAud = await new Audio(src);
+    myAud.play();
+  };
+
+  const pauseAud = () => {
+    if (myAud !== null) {
+      myAud.pause();
+      myAud = null;
+    }
+  };
+
+  function showRecordedVideo(className) {
+    isPlayingRecordings = true;
+    console.log("show recorded video");
+
+    fetch("http://localhost:3465/api/video-list", {
+      method: "POST",
+      body: JSON.stringify({ className }),
+      headers: {
+        "Content-Type": "application/json", // Specify the content type
+      },
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Network response was not ok");
+        }
+        return response.json(); // Parse the response as JSON
+      })
+      .then((videoList) => {
+        if (videoList.length > 0) {
+          playNextVideo(className, videoList);
+        }
+      })
+      .catch((error) => {
+        console.error("Error fetching video list:", error);
+      });
+  }
+
+  //   function startRecording(recordingClass) {
+  //     console.log('start recording');
+  //     mediaRecorder = new MediaRecorder(
+  //       document.getElementById('video').srcObject
+  //     );
+  //     const segmentParts = [];
+
+  //     mediaRecorder.ondataavailable = function (e) {
+  //       segmentParts.push(e.data);
+  //     };
+  //     mediaRecorder.onstop = function () {
+  //       // Save the Blob for this segment
+  //       const segmentBlob = new Blob(segmentParts, { type: 'video/webm' });
+
+  //       // Create a directory path based on the class name
+  //       const timestamp = Date.now(); // Get a timestamp for unique filenames
+  //       const fileName = `${recordingClass}/${recordingClass}_${timestamp}.webm`;
+
+  //       const formData = new FormData();
+  //       formData.append('video', segmentBlob, fileName);
+
+  //       fetch('http://localhost:3465/api/upload', {
+  //         method: 'POST',
+  //         body: formData,
+  //       })
+  //         .then((response) => {
+  //           if (response.ok) {
+  //             return response.text();
+  //           } else {
+  //             throw new Error('Failed to upload video');
+  //           }
+  //         })
+  //         .then((data) => {
+  //           console.log('Video uploaded successfully:', data);
+  //         })
+  //         .catch((error) => {
+  //           console.error('Error uploading video', error);
+  //         });
+  //     };
+
+  //     // Start recording this new segment
+  //     mediaRecorder.start(1000);
+  //   }
+
+  function startRecording(recordingClass) {
+    console.log("Start recording");
+
+    // Get the canvas element
+    const canvas = document.getElementById("canvas");
+
+    // Create a MediaStream from the canvas (requires a modern browser)
+    const canvasStream = canvas.captureStream();
+
+    // Create a MediaRecorder instance using the canvas stream
+    mediaRecorder = new MediaRecorder(canvasStream);
+    const segmentParts = [];
+
+    mediaRecorder.ondataavailable = function (e) {
+      segmentParts.push(e.data);
+    };
+    mediaRecorder.onstop = function () {
+      // Save the Blob for this segment
+      const segmentBlob = new Blob(segmentParts, { type: "video/webm" });
+
+      // Create a directory path based on the class name
+      const timestamp = Date.now(); // Get a timestamp for unique filenames
+      const fileName = `${recordingClass}/${recordingClass}_${timestamp}.webm`;
+
+      const formData = new FormData();
+      formData.append("video", segmentBlob, fileName);
+
+      fetch("http://localhost:3465/api/upload", {
+        method: "POST",
+        body: formData,
+      })
+        .then((response) => {
+          if (response.ok) {
+            return response.text();
+          } else {
+            throw new Error("Failed to upload video");
+          }
+        })
+        .then((data) => {
+          console.log("Video uploaded successfully:", data);
+        })
+        .catch((error) => {
+          console.error("Error uploading video", error);
+        });
+    };
+
+    // Start recording this new segment
+    mediaRecorder.start(1000);
+  }
+
+  function stopRecording() {
+    mediaRecorder.stop();
+  }
+
+  async function playNextVideo(className, videoList) {
+    pauseAud();
+    if (videoList.length === 0) {
+      console.log("Video list is empty.");
+      return;
+    }
+
+    const canvasElement = document.getElementById("canvas");
+    canvasElement.style.display = "none";
+    const videoSource = document.getElementById("videoSource");
+    console.log(videoSource);
+    const randomIndex = Math.floor(Math.random() * videoList.length);
+    const VideoSrc = `video/${className}/${videoList[randomIndex]}`;
+    videoSource.src = "";
+    videoSource.src = VideoSrc;
+
+    // Get the video element and reload/play the video
+
+    const videoPlayer = document.getElementById("videoPlayer");
+    videoPlayer.style.display = "flex";
+    await videoPlayer.load();
+
+    videoPlayer.play();
+
+    const rndInt = Math.floor(Math.random() * 2) + 1;
+    playAud(`audio-folder/${className}/${rndInt}.mp3`);
+
+    videoPlayer.addEventListener("ended", () => {
+      pauseAud();
+      setTimeout(() => {
+        playNextVideo(className, videoList);
+        console.log("asdfsadfasdfasdfasf");
+      }, 5000);
+    });
+  }
+
+  function stopPlayingVideo() {
+    isPlayingRecordings = false;
+    const canvasElement = document.getElementById("canvas");
+
+    const videoPlayer = document.getElementById("videoPlayer");
+    const videoSource = document.getElementById("videoSource");
+    videoPlayer.pause(); // Pause the video
+    videoSource.src = ""; // Clear the video source
+    videoPlayer.style.display = "none";
+    canvasElement.style.display = "flex";
+  }
+
+  async function initComponents() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameraDevices = devices.filter(
+        (device) => device.kind === "videoinput"
+      );
+      const cameraDeviceIds = cameraDevices.map((device) => device.deviceId);
+      const selectElement = document.getElementById("cameraSelect");
+      cameraDeviceIds.forEach((cameraId, idx) => {
+        const option = document.createElement("option");
+        option.value = cameraId;
+        option.textContent = `Camera ${idx + 1}`;
+        selectElement.appendChild(option);
+      });
+
+      return cameraDeviceIds;
+    } catch (error) {
+      console.log("Error enumerating video devices", error);
+    }
+  }
+
+  async function loadModel() {
+    const poseUrlInput = document.getElementById("poseUrlInput");
+    const poseModelURL = poseUrlInput.value + "model.json";
+    const poseMetadataURL = poseUrlInput.value + "metadata.json";
+    const model = await tmPose.load(poseModelURL, poseMetadataURL);
+    return model;
+  }
+
+  async function loadImageModel() {
+    const imageUrlInput = document.getElementById("imageUrlInput");
+    const imageModelURL = imageUrlInput.value + "model.json";
+    const imageMetadataURL = imageUrlInput.value + "metadata.json";
+    const model = await tmImage.load(imageModelURL, imageMetadataURL);
+    return model;
+  }
+
+  async function handleCameraChange() {
+    recordingAvailability = document.getElementById("recordingAvailability");
+    isRecordingAvailable =
+      recordingAvailability.selectedIndex === 0 ? true : false;
+    console.log(isRecordingAvailable);
+    model = await loadModel();
+    imageModel = await loadImageModel();
+    const selectedCameraIndex =
+      document.getElementById("cameraSelect").selectedIndex;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { deviceId: cameraIds[selectedCameraIndex] },
+    });
+    maxPredictions = model.getTotalClasses();
+    maxImagePredictions = imageModel.getTotalClasses();
+    const width = 1024;
+    const height = 768;
+    const flip = true;
+    webcam = new tmPose.Webcam(width, height, flip);
+    await webcam.setup({ deviceId: cameraIds[selectedCameraIndex] });
+    await webcam.play();
+    window.requestAnimationFrame(loop);
+    const canvas = document.getElementById("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    ctx = canvas.getContext("2d");
+    labelContainer = document.getElementById("label-container");
+    imageLabelContainer = document.getElementById("image-label-container");
+    for (let i = 0; i < maxPredictions; i++) {
+      labelContainer.appendChild(document.createElement("div"));
+    }
+    for (let j = 0; j < maxImagePredictions; j++) {
+      imageLabelContainer.appendChild(document.createElement("div"));
+    }
+  }
+
+  async function loop(timestamp) {
+    webcam.update(); // update the webcam frame
+    await predict();
+    window.requestAnimationFrame(loop);
+  }
+
+  async function predict() {
+    const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+    const prediction = await model.predict(posenetOutput);
+    const topPrediction = await getTopPrediction(prediction);
+    const imagePrediction = await imageModel.predict(webcam.canvas);
+    const topImagePrediction = await getTopPrediction(imagePrediction);
+
+    const finalPrediction =
+      topImagePrediction.probability >= topPrediction.probability
+        ? topImagePrediction
+        : topPrediction;
+
+    if (recording === false) {
+      if (
+        finalPrediction.probability >= 0.9 &&
+        finalPrediction.className === "raise hand"
+      ) {
+        noActionCnt += 1;
+        if (noActionCnt === 100) {
+          actionCnt = 0;
+
+          const rndInt = Math.floor(Math.random() * (maxPredictions - 1));
+          if (!isPlayingRecordings) {
+            await pauseAud();
+            await showRecordedVideo(prediction[rndInt].className);
+          }
+        }
+      } else {
+        actionCnt += 1;
+        if (actionCnt === 30) stopPlayingVideo();
+
+        noActionCnt = 0;
+        if (
+          finalPrediction.probability >= 0.9 &&
+          finalPrediction.className !== prevPose
+        ) {
+          startCnt = 0;
+          await pauseAud();
+          const rndInt = Math.floor(Math.random() * 2) + 1;
+          playAud(`audio-folder/${finalPrediction.className}/${rndInt}.mp3`);
+          prevPose = finalPrediction.className;
+        }
+        if (
+          finalPrediction.probability >= 0.9 &&
+          finalPrediction.className === prevPose
+        ) {
+          startCnt += 1;
+          if (startCnt === 100) {
+            startCnt = 0;
+            if (isRecordingAvailable) {
+              recording = true;
+              recordingClass = finalPrediction.className;
+              startRecording(recordingClass);
+            }
+          }
+        }
+        if (finalPrediction.probability < 0.9) {
+          if (prevPose !== "no class") {
+            await pauseAud();
+            prevPose = "no class";
+            playAud(`audio-folder/no_class.mp3`);
+          }
+          startCnt = 0;
+        }
+      }
+    } else {
+      if (
+        finalPrediction.probability >= 0.9 &&
+        finalPrediction.className !== prevPose
+      ) {
+        if (finalPrediction.className === recordingClass) {
+          stopCnt = 0;
+        } else {
+          stopCnt += 1;
+          if (stopCnt === 100) {
+            stopCnt = 0;
+            recording = false;
+            stopRecording();
+            recordingClass = "";
+          }
+        }
+        await pauseAud();
+        const rndInt = Math.floor(Math.random() * 2) + 1;
+        playAud(`audio-folder/${finalPrediction.className}/${rndInt}.mp3`);
+        prevPose = finalPrediction.className;
+      }
+      if (
+        finalPrediction.probability >= 0.9 &&
+        finalPrediction.className === prevPose
+      ) {
+        if (finalPrediction.className === recordingClass) {
+          stopCnt = 0;
+        } else {
+          stopCnt += 1;
+          if (stopCnt === 100) {
+            stopCnt = 0;
+            recording = false;
+            stopRecording();
+            recordingClass = "";
+          }
+        }
+      }
+
+      if (finalPrediction.probability < 0.9) {
+        stopCnt += 1;
+        if (stopCnt === 100) {
+          stopCnt = 0;
+          recording = false;
+          stopRecording();
+          recordingClass = "";
+        }
+        if (prevPose !== "no class") {
+          await pauseAud();
+          playAud(`audio-folder/no_class.mp3`);
+          prevPose = "no class";
+        }
+      }
+    }
+
+    for (let i = 0; i < maxPredictions; i++) {
+      const classPrediction =
+        prediction[i].className + ": " + prediction[i].probability.toFixed(2);
+      labelContainer.childNodes[i].innerHTML = classPrediction;
+    }
+
+    for (let i = 0; i < maxImagePredictions; i++) {
+      const classPrediction =
+        imagePrediction[i].className +
+        ": " +
+        imagePrediction[i].probability.toFixed(2);
+      imageLabelContainer.childNodes[i].innerHTML = classPrediction;
+    }
+
+    // finally draw the poses
+    drawPose(pose);
+  }
+
+  function drawPose(pose) {
+    if (webcam.canvas) {
+      ctx.drawImage(webcam.canvas, 0, 0);
+      // draw the keypoints and skeleton
+      if (pose) {
+        const minPartConfidence = 0.5;
+        tmPose.drawKeypoints(pose.keypoints, minPartConfidence, ctx);
+        tmPose.drawSkeleton(pose.keypoints, minPartConfidence, ctx);
+      }
+    }
+  }
+
+  async function getTopPrediction(prediction) {
+    if (prediction !== null) {
+      let topPrediction = prediction[0];
+      for (let i = 1; i < prediction.length; i++) {
+        if (prediction[i].probability > topPrediction.probability) {
+          topPrediction = prediction[i];
+        }
+      }
+      return topPrediction;
+    } else {
+      return null;
+    }
+  }
+
+  window.onload = function () {
+    document.getElementById("cameraSelect").onchange = handleCameraChange;
+    cameraIds = initComponents();
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
